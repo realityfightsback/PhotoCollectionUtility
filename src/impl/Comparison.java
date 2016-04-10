@@ -1,23 +1,27 @@
 package impl;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.FileTime;
-import java.util.Calendar;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutput;
+import java.io.ObjectOutputStream;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map.Entry;
+import java.util.Set;
 
 import org.apache.commons.io.FileUtils;
 
-import util.FileRepresentation;
+import util.StopWatch;
 
 public class Comparison extends Object {
 
 	// @formatter:off
+	// TODO To prevent specific portions of Java code from being formatted, go to "Window > Preferences > Java > Code Style > Formatter". Click the "Edit..." button, go to the "Off/On Tags" tab and enable the tags
 	/*
 	 * Want to offer the following f(x)
 	 * 1) Ability to take a folder full of photos (submissionFolder) and check whether they exist in a repository folder (Family Pictures folder)
@@ -36,20 +40,92 @@ public class Comparison extends Object {
 	 */
 	// @formatter:on
 
-	private static int filesMoved = 0;
-	private static String subLocation = "E:\\Family Stuff\\DAD pics";
-	private static String repoLocation = "F:\\Family Stuff\\Family Pictures";
+	private static final String INDEX_KEY_VAL_SEPERATOR = "___---___";
+
+	private static String indexLocation = "C:\\Users\\Standard\\Desktop\\Results\\DropboxCompare.index";
+
+	private static String candidateFilelocation =
+	// "C:\\Users\\Standard\\Desktop\\Add";
+	"I:\\DCIM\\100MEDIA";
+	// "E:\\Family Stuff\\DAD pics";
+	private static String repoLocation =
+	// "C:\\Users\\Standard\\Desktop\\Repo";
+	"E:\\Dropbox just in case";
+	// "F:\\Family Stuff\\Family Pictures";
+	private static String outputDir = "C:\\Users\\Standard\\Desktop\\Results\\";
 
 	public static void main(String[] args) throws IOException {
 
-		HashSet<String> excludedFileNames = new HashSet<String>();
-		String[] excludedArray = { "ZbThumbnail.info", "Thumbs.db" };
+		Action actionToTake = new DiffWriteAction(candidateFilelocation,
+				repoLocation, outputDir);
 
-		for (int i = 0; i < excludedArray.length; i++) {
-			excludedFileNames.add(excludedArray[i]);
+		HashSet<String> excludedFileNames = createExcludedSet();
+
+		HashMap<String, Integer> repoSet = createRepoSet();
+
+		runCandidateFilesAgainstRepo(repoSet, excludedFileNames, actionToTake);
+
+	}
+
+	private static void runCandidateFilesAgainstRepo(
+			HashMap<String, Integer> repoSet,
+			HashSet<String> excludedFileNames, Action actionToTake)
+			throws IOException {
+		StopWatch stopWatch = new StopWatch();
+
+		File subFolder = new File(candidateFilelocation);
+
+		Collection<File> collectionSubFiles = FileUtils.listFiles(subFolder,
+				null, true);
+
+		File[] candidateFiles = collectionSubFiles.toArray(new File[0]);
+
+		for (File candidateFile : candidateFiles) {
+
+			if (candidateFile.isFile()
+					&& excludedFileNames.contains(candidateFile.getName()) == false)
+				if (repoSet.containsValue(generateHash(candidateFile)))
+					actionToTake.executeDupeAction(candidateFile);
+				else
+					actionToTake.executeUniqueAction(candidateFile);
+
+			// May take a while
+			if (actionToTake.filesProcessed % 100 == 0)
+				System.out
+						.println(String
+								.format("Still running. Currently %d files processed in %d millis",
+										actionToTake.filesProcessed,
+										stopWatch.getDuration()));
 		}
 
-		HashSet<FileRepresentation> repoSet = new HashSet<FileRepresentation>();
+		System.out.println("Candidate comparison completed.");
+
+	}
+
+	/**
+	 * 
+	 * @param temp
+	 * @return Hash based on file contents. -1 for files over 100MB
+	 * @throws IOException
+	 */
+	private static Integer generateHash(File temp) throws IOException {
+
+		if (temp.length() > 100_000_000) {// File too large to safely hash
+			System.out.println(temp.getName());
+			return -1;
+		}
+		return FileUtils.readFileToString(temp).hashCode();
+
+	}
+
+	private static HashMap<String, Integer> createRepoSet() throws IOException {
+
+		StopWatch stopWatch = new StopWatch();
+
+		HashMap<String, Integer> repoSet = new HashMap<String, Integer>();
+
+		// Get pre-generated hashes (prior runs)
+		readIndexFileIn(repoSet);
 
 		File repoFolder = new File(repoLocation);
 
@@ -61,153 +137,106 @@ public class Comparison extends Object {
 		for (int i = 0; i < repoAllFiles.length; i++) {
 			File temp = repoAllFiles[i];
 			if (temp.isFile()) {
-				FileRepresentation fp = new FileRepresentation(temp.getName(),
-						temp.length());
-				repoSet.add(fp);
+				String key = temp.getName() + temp.length();
+				// If file was not pregenerated, add it
+				if (repoSet.containsKey(key) == false) {
+					repoSet.put(key, generateHash(temp));
+				}
+
+				if (i % 100 == 0) {
+					System.out
+							.println(String
+									.format("Repo set building currently at %d elements in %d millis ",
+											i, stopWatch.getDuration()));
+				}
 			}
 		}
 
-		System.out.println("Repo set contains " + repoSet.size());
+		System.out.println(String.format(
+				"Repo set generation took %d millis. Contains %d elements ",
+				stopWatch.getDuration(), repoSet.size()));
 
-		File subFolder = new File(subLocation);
+		stopWatch.reset();
+		// Overwrite index
+		writeOutIndexFile(repoSet);
 
-		Collection<File> collectionSubFiles = FileUtils.listFiles(subFolder,
-				null, true);
+		writeOutIndexFileNatively(repoSet);
 
-		File[] subAllFiles = collectionSubFiles.toArray(new File[0]);
+		System.out.println(String.format("Repo index writeout took %d millis.",
+				stopWatch.getDuration()));
 
-		for (int i = 0; i < subAllFiles.length; i++) {
-			File temp = subAllFiles[i];
-			if (temp.isFile()) {
-				FileRepresentation fp = new FileRepresentation(temp.getName(),
-						temp.length());
-				if (excludedFileNames.contains(temp.getName()) == false)
-					if (repoSet.contains(fp))
-						moveFile(temp, true);// its probably a duplicate
-					else
-						moveFile(temp, false);
+		return repoSet;
+	}
 
-			}
+	private static void writeOutIndexFileNatively(
+			HashMap<String, Integer> repoSet) throws IOException {
 
-			// May take a while
-			if (filesMoved % 100 == 0)
-				System.out.println("Still running. Currently " + filesMoved
-						+ " files moved");
-
-		}
+		FileOutputStream f = new FileOutputStream(new File(indexLocation
+				+ ".serial"));
+		ObjectOutput s = new ObjectOutputStream(f);
+		s.writeObject(repoSet);
+		s.flush();
 
 	}
 
-	private static void moveFile(File temp, boolean isDupe) throws IOException {
-		filesMoved++;
-		String fPath = createFilePath(false, temp);
-
-		fPath = checkForNameConflicts(fPath);
-
-		FileUtils.moveFile(temp, new File(fPath));
-
-	}
-
-	/**
-	 * Ensures a file with the same name doesn't exist. If it does we begin
-	 * appending parenthesized number to the file. Example: File.jpg ->
-	 * File(1).jpg, we check again. If a pre-existing file of that name still
-	 * conflicts, -> File(2).jpg, etc
-	 * 
-	 * @param fPath
-	 * @return The non-conflicting String
-	 */
-	public static String checkForNameConflicts(String fPath) {
-		File checkForExistence = new File(fPath);
-
-		StringBuilder b = null;
-		boolean firstRun = true; // First time through we just look for ".", if
-									// we have to do a second run because there
-									// is a xxx(1).xxx already need to change
-									// the digit.
-		int sequenceNum = 1;
-
-		while (checkForExistence.exists()) {
-			// Determine file extension length (.jpg .jgeg)
-
-			if (firstRun) {
-				int periodPosition = fPath.lastIndexOf("\\.");
-
-				b = new StringBuilder(fPath);
-
-				b.insert(periodPosition - 1, "(" + sequenceNum + ")");
-			} else {
-				int openingParen = fPath.lastIndexOf("(");
-				int closingParen = fPath.lastIndexOf(")");
-
-				b = new StringBuilder(fPath);
-
-				b.replace(openingParen + 1, closingParen, sequenceNum + "");
-			}
-
-			fPath = b.toString();
-			checkForExistence = new File(fPath);
-		}
-
-		return fPath;
-
-	}
-
-	public static String createFilePath(boolean isDupe, File f)
+	private static void writeOutIndexFile(HashMap<String, Integer> repoSet)
 			throws IOException {
-		StringBuilder sBuild = new StringBuilder();
+		File index = new File(indexLocation);
+		FileUtils.deleteQuietly(index);
 
-		sBuild.append(subLocation);
+		Set<Entry<String, Integer>> entries = repoSet.entrySet();
 
-		sBuild.append(File.separatorChar);
-		if (isDupe)
-			sBuild.append("likelyDupe");
-		else
-			sBuild.append("unique");
-
-		createDataFormattedPath(f, sBuild);
-
-		if (filesMoved % 100 == 0)
-			System.out.println("Sample file move location" + sBuild.toString());
-
-		return sBuild.toString();
+		StringBuilder stringBuilder = new StringBuilder();
+		for (Entry<String, Integer> entry : entries) {
+			stringBuilder.append(entry.getKey() + INDEX_KEY_VAL_SEPERATOR
+					+ entry.getValue() + "\n");
+		}
+		FileUtils.writeStringToFile(index, stringBuilder.toString());
 	}
 
-	public static void createDataFormattedPath(File f, StringBuilder sBuild)
+	private static void readIndexFileIn(HashMap<String, Integer> repoSet)
 			throws IOException {
-		sBuild.append(File.separatorChar);
-		Path path = FileSystems.getDefault().getPath(f.getAbsolutePath());
+		File index = new File(indexLocation);
 
-		BasicFileAttributes attrs = Files.readAttributes(path,
-				BasicFileAttributes.class);
+		if (index.exists() == false) {
+			return;
+		}
 
-		FileTime fTime = attrs.lastModifiedTime();
+		List<String> lines = FileUtils.readLines(new File(indexLocation));
 
-		// String rawTempTime = fTime.toString();
-		//
-		// String tempTime = (rawTempTime).substring(0, 7);
+		for (String line : lines) {
+			String[] kv = line.split(INDEX_KEY_VAL_SEPERATOR);
+			if (kv.length == 2) {
+				repoSet.put(kv[0], Integer.parseInt(kv[1]));
+			}
+		}
 
-		Calendar cal = Calendar.getInstance();
+	}
 
-		// TODO this is hacky. Look at other timezone conversion stuff
-		long timeZoneConversion = fTime.toMillis() - (8 * 60 * 60 * 1000);
-		cal.setTimeInMillis(timeZoneConversion);
+	private static HashMap<String, Integer> readIndexFileInNatively()
+			throws IOException, ClassNotFoundException {
+		try (FileInputStream in = new FileInputStream("tmp");
+				ObjectInputStream s = new ObjectInputStream(in);) {
+			return (HashMap<String, Integer>) s.readObject();
+		}
+	}
 
-		String tempTime = cal.get(Calendar.YEAR) + "-"
-				+ cal.get(Calendar.MONTH);
+	private static HashSet<String> createExcludedSet() {
+		HashSet<String> excludedFileNames = new HashSet<String>();
+		String[] excludedArray = { "ZbThumbnail.info", "Thumbs.db" };
 
-		sBuild.append(tempTime);
-
-		sBuild.append(File.separatorChar);
-		sBuild.append(f.getName().trim());
+		for (int i = 0; i < excludedArray.length; i++) {
+			excludedFileNames.add(excludedArray[i]);
+		}
+		return excludedFileNames;
 	}
 
 	public static String getSubLocation() {
-		return subLocation;
+		return candidateFilelocation;
 	}
 
 	public static void setSubLocation(String subLocation) {
-		Comparison.subLocation = subLocation;
+		Comparison.candidateFilelocation = subLocation;
 	}
 
 	public static String getRepoLocation() {
